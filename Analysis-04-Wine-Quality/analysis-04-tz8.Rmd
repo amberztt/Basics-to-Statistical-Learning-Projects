@@ -1,0 +1,229 @@
+---
+title: "Wine Quality Analysis"
+author: "Tiantian Zhang (tz8@illinois.edu)"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document: 
+    theme: cosmo
+    toc: yes
+  pdf_document: default
+urlcolor: BrickRed
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.align = 'center')
+```
+
+```{r, load-packages, include = FALSE}
+library(readr)
+library(tibble)
+library(rsample)
+library(dplyr)
+library(caret)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(purrr)
+library(tidyverse)
+library(caret)
+library(glmnet)
+library(ROSE)
+library(DMwR)
+library(randomForest)
+library(devtools)
+```
+
+***
+
+# Abstract
+
+> Statistical techniques are applied to the wine quality data set in order to predict the wine quality from 1 to 10. A variety of machine learning techniques are utilized to perform both the regression and classification tasks by applying the feature engineering techniques to the quality variable. In this analysis, the best model is selected, but the model still faces some limitations. More data and variables could be included to improve the future analysis.
+
+***
+
+# Introduction
+
+Rating the quality of a wine is usually wine expert's job, and price of the wine is often based on the quality rating. It is often regarded that wine quality rating is primarily a subjective process and is strongly influenced by extrinsic factors. [^1] Since each expert often offers slightly different ratings, and it is impossible to have expert to rate the quality of a wine every time. This analysis aims to build machine learning models based on given attributes and predict wine quality.
+
+In this analysis, we are going to perform both classification and regression on the data set. Specifically, we not only treat quality as numeric variable to run regression but also transform `quality` to factor variable to perform multiclass classification and binary classification. Utilizing random forest and logistic regression, we select our best model. Due to the lack of attributes, the model is limited in its scope, and more attributes are preferred in future analysis.
+
+***
+
+# Method
+
+## Data
+
+The data was extracted from UCI Machine Learning Repository. [^2] The data set includes two datasets, related to red and white vinho verde wine samples. It only includes physicochemical (inputs) and sensory (the output) variables due to privacy and logistic issues. The data set includes 12 attributes. Since the goal of this analysis is to build model to predict the quality, the response variable here is `quality`, and we are going to transform it to be numeric variable and factor variable in order to perform regression and classification tasks.
+
+```{r,warning = FALSE, message = FALSE}
+data_source = devtools::install_github("coatless/ucidata")
+wine = as_tibble(ucidata::wine)
+wine = wine %>% 
+  mutate(quality_num = quality,
+         quality_cat = as.factor(quality)) %>% 
+  select(-quality)
+
+# split data
+set.seed(42)
+wine_tst_trn_split = initial_split(wine, prop = 0.80)
+wine_trn = training(wine_tst_trn_split)
+wine_tst = testing(wine_tst_trn_split)
+wine_est_val_split = initial_split(wine_trn, prop = 0.80)
+wine_est = training(wine_est_val_split)
+wine_val = testing(wine_est_val_split)
+```
+
+## Modeling
+
+In order to predict the wine quality, 2 machine learning models are considered. By using numeric quality variable and factor quality variable, we run regression and classification respectively.
+
+2 machine learning methods are selected:
+
+ - Random Forest
+ - Regularization with Ridge
+
+### Regression
+
+```{r}
+set.seed(42)
+```
+
+```{r, random-forest, echo = TRUE}
+rf_reg_mod = randomForest(
+  quality_num ~ . - quality_cat,
+  data = wine_est,
+  mtry = 7,
+  ntree = 50
+)
+```
+
+```{r}
+set.seed(42)
+```
+
+```{r, logistic-ridge, echo = TRUE}
+wine_est_x = model.matrix(quality_num ~ . - quality_cat, data = wine_est)[, -1]
+wine_est_y = wine_est$quality_num
+wine_val_x = model.matrix(quality_num ~ . - quality_cat, data = wine_val)[, -1]
+cv_ridge_reg_mod = cv.glmnet(
+  x = wine_est_x,
+  y = wine_est_y,
+  nfolds = 10,
+  lambda = c(0.6, 0.06, 0.006),
+  alpha = 0
+)
+```
+
+### Multiclass Classification
+
+```{r}
+set.seed(42)
+```
+
+```{r, random-forest-multiclass, echo = TRUE}
+rf_mult_mod = randomForest(
+  quality_cat ~ . - quality_num,
+  data = wine_est,
+  mtry = 1,
+  ntree = 200
+)
+```
+
+### Binary Classification
+
+```{r}
+set.seed(42)
+```
+
+```{r, logistic-ridge-binary, echo = TRUE}
+wine_bi_est_x = model.matrix(quality_cat ~ . - quality_num, data = wine_est)[, -1]
+wine_bi_val_x = model.matrix(quality_cat ~ . - quality_num, data = wine_val)[, -1]
+binary_est = ifelse(wine_est$quality_num > 5, "high", "low")
+binary_val = ifelse(wine_val$quality_num > 5, "high", "low")
+cv_ridge_bi_mod = cv.glmnet(x = wine_bi_est_x, y = binary_est, family = "binomial", nfolds = 5, alpha = 0)
+```
+
+## Evaluation
+
+We are going to select the best model based on validated accuracy. 
+
+```{r}
+calc_acc = function(act, pred){
+  mean(act == pred)
+}
+```
+
+***
+
+# Results
+
+```{r}
+set.seed(42)
+# Random Forest Regression
+rf_reg_pred = predict(rf_reg_mod, wine_val)
+rf_reg_pred_round = round(rf_reg_pred)
+rf_reg_acc = calc_acc(wine_val$quality_cat, rf_reg_pred_round)
+# Regression Ridge
+cv_reg_pred = predict(cv_ridge_reg_mod$glmnet.fit, wine_val_x)[,3]
+cv_reg_pred_round = round(cv_reg_pred)
+cv_reg_acc = calc_acc(wine_val$quality_num, cv_reg_pred_round)
+# Random Forest Multiclass
+mult_pred = predict(rf_mult_mod, newdata = wine_val)
+mult_pred1 = as.numeric(mult_pred) + 2
+mult_rf_acc = calc_acc(wine_val$quality_num, mult_pred1)
+# Binary Ridge
+binary_pred = predict(cv_ridge_bi_mod$glmnet.fit, wine_val_x, type = "class")[,100]
+binary_acc = calc_acc(binary_val, binary_pred)
+```
+
+```{r, table}
+tibble(
+  "Model" = c("Regression: Random Forest", "Regression: Regularization", "Multiclass Classification: Random Forest", "Binary Classification: Logistic Regression - Regularization"),
+  "Validated Accuracy" = c(rf_reg_acc, cv_reg_acc, mult_rf_acc, binary_acc)
+  ) %>% 
+  kable(digits = 3) %>%
+  kable_styling("striped", full_width = FALSE)
+```
+
+***
+
+# Discussion
+
+```{r, refit model to training data}
+wine_bi_trn_x = model.matrix(quality_cat ~ . - quality_num, data = wine_trn)[, -1]
+wine_bi_tst_x = model.matrix(quality_cat ~ . - quality_num, data = wine_tst)[, -1]
+binary_trn = ifelse(wine_trn$quality_num > 5, "high", "low")
+binary_tst = ifelse(wine_tst$quality_num > 5, "high", "low")
+best_mod = cv.glmnet(x = wine_bi_trn_x, y = binary_trn, family = "binomial", nfolds = 5, alpha = 0)
+binary_pred = predict(cv_ridge_bi_mod$glmnet.fit, wine_val_x, type = "class")[,100]
+binary_acc = calc_acc(binary_val, binary_pred)
+```
+
+Based on the validated accuracy presented in the table in the results section, we choose the binary classification model which utilizes the logistic regression with regularization techniques. Refitting this model to the training data and applying the model on the testing data, the test accuracy is 0.7517. The selection is easy to understand because categorizing a wine to be "good" or "bad" will be far easier than categorizing the wine into specified 10 categories.
+
+Even though the test accuracy looks good, we cannot ignore that there are only 11 predictors in this model, which seems somewhat lacking important features. Moreover, the attributes are a bit limited in their scope. All of the predictors used in this analysis are physicochemical factors, and there is no information about the grape types, wine brands and the year that the wine was made due to privacy and logistic issues. Therefore, the model is not so accurate in making predictions that took factors other than physicochemical features into consideration.
+
+***
+
+# Appendix
+
+## Data Dictionary
+
+- `quality_num` - quality level as numbers
+- `quality_cat` - quality level as categories
+- `color` - "White" or "Red"
+
+## EDA
+
+```{r, warning = FALSE, message = FALSE}
+wine_trn %>% 
+  ggplot(aes(x = pH, col = quality_num)) + 
+  geom_density()
+
+wine_trn %>% 
+  ggplot(aes(x = color, col = quality_cat)) + 
+  geom_density()
+```
+
+[^1]: [Nature and Origins of Wine Quality](https://www.sciencedirect.com/topics/food-science/wine-quality)
+[^2]: [UCI Machine Learning Repository: Wine Quality Data Set](https://archive.ics.uci.edu/ml/datasets/Wine+Quality)
