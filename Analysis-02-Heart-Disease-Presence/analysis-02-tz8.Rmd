@@ -1,0 +1,239 @@
+---
+title: "Heart Disease Presence"
+author: "Tiantian Zhang (tz8@illinois.edu)"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document: 
+    theme: cosmo
+    toc: yes
+  pdf_document: default
+urlcolor: BrickRed
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.align = 'center')
+```
+
+```{r, load-packages, include = FALSE}
+library(readr)
+library(tibble)
+library(rsample)
+library(dplyr)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(purrr)
+library(e1071)
+```
+
+***
+
+# Abstract
+
+> Statistical modeling techniques with different validation methods are applied to the heart disease data set in order to predict the presence of heart disease by distinguishing presence from absence based upon demographic and physical attributes of the patients. Various machine learning and validations methods are utilized and metrics are calculated to evalutate the models, but still the limitation exists for the chosen model because of lack of important attributes.
+
+***
+
+# Introduction
+
+Heart disease generally refers to conditions including narrowed or blocked blood vessels that can cause a heart attack, chest pain(angina) or stroke. [^1] It is often defined that if there are more than 1 vessels with greater than 50% diameter narrowing, the patient is said to be exposed to the presence of heart disease. The more vessels with greater than 50% diameter narrowing, the more severe evidence of heart disease is shown. Therefore, the number of vessels with 50% diameter narrowing is used as the signal to indicate the evidence of heart disease, and a tool to predict the presence of heart disease will greatly benefit the heart disease diagnosis process and make it more efficient.
+
+To establish a model to predict the presence of heart disease based on the attributes of the patients, level 1 to 4 of severity of heart disease evidence are combined to distinguish presence from absence. Machine learning methods are applied to the data set and validations techniques are used in order to pick the best tools of heart disease prediction. Due to the lack of important attributes, the model is limited in its use. More data would be helpful to further prediction.
+
+***
+
+# Method
+
+## Data
+
+The data was extracted from the UCI Machine Learning Repository. [^2] The data set originally has 76 attributes, but based on the results of published experiment, a subset of 12 variables are selected. Since the tool is aimed to predict whether the heart disease presence exists or not, levels from 1 to 4(v1, v2, v3, v4) are combined as opposed to v0, which distinguishes the presence of heart disease from absence.
+
+```{r, load-data, message = FALSE}
+heart = read_csv(file = "data/heart-disease.csv")
+```
+
+```{r, insert variable}
+heart = heart %>% 
+  mutate_if(is.character, as.factor)
+heart$presence = factor(case_when(
+  heart$num == "v0" ~ "no",
+  TRUE ~ "yes"
+))
+```
+
+```{r, train-test split}
+set.seed(42)
+heart_tst_trn_split = initial_split(heart, prop = 0.80)
+heart_trn = training(heart_tst_trn_split)
+heart_tst = testing(heart_tst_trn_split)
+```
+
+## Modeling
+
+5 machine learning methods are used to predict the presence of heart disease: generalized linear model, random forest, k-nearest neighbors and linear discriminant analysis, rpart within 1 SE. Cross-validation methods are applied to all four machine learning models, and specifically, for random forest model, we also use out-of-bag validation method.
+
+Since the response is binary and factor, the machine learning methods above work well for binary classification.
+
+```{r, generalized linear model}
+set.seed(42)
+glm_mod = train(
+  presence ~ . -num,
+  data = heart_trn,
+  trControl = trainControl(method = "cv", number = 5),
+  method = "glm",
+  metric = "Accuracy"
+)
+```
+
+```{r, random forest, 5-fold cross validation}
+set.seed(42)
+rf_cv_mod = train(
+  presence ~ . -num,
+  data = heart_trn,
+  trControl = trainControl(method = "cv", number = 5),
+  method = "rf",
+  metric = "Accuracy"
+)
+```
+
+```{r, random forest, oob}
+set.seed(42)
+rf_oob_mod = train(
+  presence ~ . -num,
+  data = heart_trn,
+  trControl = trainControl(method = "oob"),
+  method = "rf",
+  metric = "Accuracy"
+)
+```
+
+```{r, knn, 5-fold cross validation}
+set.seed(42)
+knn_mod = train(
+  presence ~ . -num,
+  data = heart_trn,
+  trControl = trainControl(method = "cv", number = 5),
+  method = "knn",
+  metric = "Accuracy"
+)
+```
+
+```{r, lda}
+set.seed(42)
+lda_mod = train(
+  presence ~ . -num,
+  data = heart_trn,
+  trControl = trainControl(method = "cv", number = 5),
+  method = "lda",
+  metric = "Accuracy"
+)
+```
+
+```{r, rpart1SE}
+set.seed(42)
+rpart1se_mod = train(
+  presence ~ . -num,
+  data = heart_trn,
+  trControl = trainControl(method = "cv", number = 5),
+  method = "rpart1SE",
+  metric = "Accuracy"
+)
+```
+
+
+## Evaluation
+
+We are going to pick the best model based on the cross-validation accuracy, and apply the test data onto the selected model to calculate the test accuracy.
+To determine whether the cross-validation accuracies of the models are good or not, we use the no information rate as reference. If the cross-validated accuracies are much higher than the no information rate, the models are worth using and considered to be somewhat accurate. But if the cross-validated accuracies are lower than no information rate, the models are useless to make predictions.
+
+```{r, no information rate, message = FALSE}
+nir = length(which(heart_trn$presence == "yes")) / nrow(heart_trn)
+```
+
+```{r, accuracy function}
+get_acc = function(act, pred){
+  mean(act == pred)
+}
+```
+
+***
+
+# Results
+
+```{r, table}
+tibble(
+  "Model" = c("Generalized Linear Model", "Random Forest (Best)", "Random Forest", "KNN", "LDA", "Rpart Within 1 SE", "No Information Rate"),
+  "Sampling" = c("Cross validation", "Cross validation", "Out of bag", "Cross Validation", "Cross Validation", "Cross Validation","------"),
+  "Training Accuracy" = c(max(glm_mod$results$Accuracy),
+                          max(rf_cv_mod$results$Accuracy),
+                          max(rf_oob_mod$results$Accuracy),
+                          max(knn_mod$results$Accuracy), 
+                          max(lda_mod$results$Accuracy),
+                          max(rpart1se_mod$results$Accuracy),
+                          nir)
+) %>% 
+  kable(digits = 4) %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+
+
+
+
+***
+
+# Discussion
+
+```{r, test accuracy}
+acc_best = get_acc(heart_tst$presence, predict(rf_cv_mod, heart_tst))
+```
+
+
+The Random Forest method using cross validation has the lowest cross-validated accuracy, and it is well above the no information rate, so it is considered as the best model in this analysis. The test accuracy of the best model is 0.8095, which seems good.
+
+Since the analysis is only using 5 models and it is almost impossible to try all kinds of classification-related models in this analysis, there could still be other machine learning methods, such as svm and neural network, that work better than our chosen model, random forest.
+
+The final model takes 12 attributes into consideration, which seems somewhat lacking important attributes. Even though it is selected based on the published experiment, the analysis should still take other relevant variables into consideration. For example, family history is an important indicator to detect the presence of heart disease since heart disease can be categorized into congenital and acquired heart disease. Also, the chest pain location and duration of exercise time in minutes are also relevant indicators that could be taken into account when creating the model.
+
+Moreover, the variables being included in this data set are mostly demographic attributes and short-term physical attributes. Since heart disease cannot be induced in a short term, it could be better to consider some long-term factors such as living environment and diet that can gradually trigger heart disease.
+
+Therefore, it seems more attributes have been provided in the UCI Machine Learning data set with a total of 74 attributes, so it could be better if further analysis includes more relevant variables.
+
+***
+
+# Appendix
+
+## Data Dictionary
+
+- `age` - age in years
+- `sex` - sex (1 = male; 0 = female)
+- `cp` -  chest pain type 
+ - Value 1: typical angina 
+ - Value 2: atypical angina 
+ - Value 3: non-anginal pain 
+ - Value 4: asymptomatic 
+- `trestbps` - resting blood pressure (in mm Hg on admission to the hospital) 
+- `chol` - serum cholestoral in mg/dl 
+- `fbs` - fasting blood sugar > 120 mg/dl (1 = true; 0 = false) 
+- `restecg` - resting electrocardiographic results 
+-- Value 0: normal 
+-- Value 1: having ST-T wave abnormality (T wave inversions and/or ST elevation or depression of > 0.05 mV) 
+-- Value 2: showing probable or definite left ventricular hypertrophy by Estes' criteria 
+- `thalach` - maximum heart rate achieved 
+- `exang` - exercise induced angina (1 = yes; 0 = no)
+- `oldpeak` - ST depression induced by exercise relative to rest 
+- `num` 
+ - v0: 0 vessels with greater than 50% diameter narrowing. (No presence of heart disease.)
+ - v1: 1 vessels with greater than 50% diameter narrowing. (Some presence of heart disease.)
+ - v2: 2 vessels with greater than 50% diameter narrowing. (Some presence of heart disease.)
+ - v3: 3 vessels with greater than 50% diameter narrowing. (Some presence of heart disease.)
+ - v4: 4 vessels with greater than 50% diameter narrowing. (Some presence of heart disease.)
+- `location` - living area
+- `presence` - whether the heart disease exist or not (yes: exist; no: not)
+
+ [^1]: [Mayo Clinic: Heart Disease](https://www.mayoclinic.org/diseases-conditions/heart-disease/symptoms-causes/syc-20353118)
+ [^2]: [UCI Machine Learning Repository: Heart Disease Data Set](https://archive.ics.uci.edu/ml/datasets/Heart+Disease)
+ 
