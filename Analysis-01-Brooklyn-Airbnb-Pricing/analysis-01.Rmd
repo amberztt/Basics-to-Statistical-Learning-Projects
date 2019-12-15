@@ -1,0 +1,296 @@
+---
+title: "Brooklyn Airbnb Pricing"
+author: "Tiantian Zhang (tz8@illinois.edu)"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document: 
+    theme: cosmo
+    toc: yes
+  pdf_document: default
+urlcolor: BrickRed
+---
+
+```{r, setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.align = 'center')
+```
+
+```{r, load-packages, include = FALSE}
+library(readr)
+library(tibble)
+library(rsample)
+library(dplyr)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(purrr)
+```
+
+***
+
+# Abstract
+
+ > More and more people start to prioritize Airbnb housing as their short-time accomodation option in large cities due to its cheaper prices and good location. Statistical learning techniques are utilized to study the factors that have an impact on the Airbnb price in Brooklyn, and determine whether it will be possible to effectively predict the Airbnb housing prices in Brooklyn, New York City.
+
+***
+
+# Introduction
+
+As a leading short-term homestay provider, Airbnb has competitive advantages over its diverse housing available and wide price ranges. When selecting a house, price is sometimes the biggest concern for people to make a selection. It would be hard to find a medium or cheap priced hotel in Brooklyn, and more people are willing to look for houses with decent prices and location on Airbnb.
+
+Even though the housing prices are continuously fluctuating on a daily basis and sometimes surprisingly cheap prices for houses with good conditions appear, it is still believed that there could be certain predictability hidden beneath the housing features. Both explicit features such as the room numbers and types and implicit features including reviews and availability are likely to play a role in deciding the housing prices. The analysis is intended to offer Airbnb users an insight of what kind of houses could be concerned as overpriced or underpriced in order to make good selections.
+
+Statistical learning techniques are implemented to interpret and decompose the price to a set of potential factors. After cleaning the data, there are 48,895 observations and select 9 relevent variables as potential factors that impact the housing prices. Our final model will be encounter certain constraints and further discussions are needed.
+
+***
+
+# Methods
+
+## Data
+
+The data was accessed via Kaggle. [^1] It contains information on Airbnb listings in New York, NY during 2019 including price, rental attributes, and location. For the purposes of this analysis, the data was restricted to short term (one week or less) rentals in Brooklyn that rent for less than $1000 a night. (Additionally, only rentals that have been reviewed are included.)
+
+```{r, load-data, message = FALSE}
+airbnb = read_csv(file = "data/AB_NYC_2019.csv")
+```
+
+```{r, subset-data}
+brooklyn = airbnb %>% 
+  filter(minimum_nights <= 7) %>%
+  filter(neighbourhood_group == "Brooklyn") %>% 
+  filter(number_of_reviews > 0) %>%
+  filter(price > 0, price < 1000) %>% 
+  na.omit() %>% 
+  select(latitude, longitude, room_type, price, minimum_nights, number_of_reviews, 
+         reviews_per_month, calculated_host_listings_count, availability_365) %>% 
+  mutate(room_type = as.factor(room_type))
+```
+
+```{r, split-data}
+set.seed(42)
+# test-train split
+bk_tst_trn_split = initial_split(brooklyn, prop = 0.80)
+bk_trn = training(bk_tst_trn_split)
+bk_tst = testing(bk_tst_trn_split)
+# estimation-validation split
+bk_est_val_split = initial_split(bk_trn, prop = 0.80)
+bk_est = training(bk_est_val_split)
+bk_val = testing(bk_est_val_split)
+```
+
+## Modeling
+
+In order to predict the price of rentals, three modeling techniques were considered: linear models, k-nearest neighbors models, and decision tree models. 
+
+- Linear models with and without log transformed responses were considered. Various subsets of predictors, with and without interaction terms were explored.
+- k-nearest neighbors models were trained using all available predictor variables. The choice of k was chosen using a validation set.
+- Decision tree models were trained using all available predictors. The choice of the complexity parameter was chosen using a validation set.
+
+```{r, linear-models}
+# 1. a linear model that includes all available predictors
+lm_mod = lm(price ~ ., data = bk_est)
+# 2. a linear model that selects from all available predictors using backwards selection and AIC
+lm_aic_back_mod = step(lm_mod, direction = "backward", trace = 0)
+# 3. a linear model that selects from all available predictors, as well as all two-way interactions using backwards selection and AIC
+lm_int_mod = lm(price ~ . ^ 2, data = bk_est)
+lm_int_aic_back_mod = step(lm_int_mod, direction = "backward", trace = 0)
+# 4. a linear model that uses a log-transformed response and all available predictors
+lm_log_mod = lm(log(price) ~ ., data = bk_est)
+# 5. a linear model that uses a log-transformed response and selects from all available predictors using backwards selection and AIC
+lm_log_aic_back_mod = step(lm_log_mod, direction = "backward", trace = 0)
+# 6. a linear model that uses a log-transformed response and selects from all available predictors, as well as all two-way interactions using backwards selection and AIC
+lm_log_int_mod = lm(log(price) ~ . ^ 2, data = bk_est)
+lm_log_int_aic_back_mod = step(lm_log_int_mod, direction = "backward", trace = 0)
+```
+
+```{r, knn-models}
+k = 1:100
+# use all available predictors
+knn_mod = knnreg(price ~ ., bk_est)
+# use the values of k specified above
+knn_mods_k = map(k, ~knnreg(price ~., data = bk_est, k = .x))
+```
+
+```{r, tree-models}
+cp = c(1.000, 0.100, 0.010, 0.001, 0)
+# use all available predictors
+tree_mod = rpart(price ~ ., data = bk_est)
+# use the values of cp specified above
+tree_mods_cp = map(cp, ~rpart(price ~ ., data = bk_est, cp = .x))
+```
+
+## Evaluation
+
+To evaluate the ability to predict rental prices, the data was split into estimation, validation, and testing sets. Error metrics and graphics are reported using the validation data in the Results section.
+
+```{r, rmse-functions}
+calc_rmse = function(actual, predicted) {
+  sqrt(mean( (actual - predicted) ^ 2) )
+}
+
+calc_rmse_model = function(model, data, response) {
+  actual = data[[response]]
+  predicted = predict(model, data)
+  sqrt(mean((actual - predicted) ^ 2))
+}
+
+calc_rmse_log_model = function(model, data, response) {
+  actual = data[[response]]
+  predicted = exp(predict(model, data))
+  sqrt(mean((actual - predicted) ^ 2))
+}
+```
+
+***
+
+# Results
+
+```{r, calc-validation-error-lm}
+rmse_lm = calc_rmse_model(lm_mod, bk_val, "price")
+rmse_lm_aic_back = calc_rmse_model(lm_aic_back_mod, bk_val, "price")
+rmse_lm_int_aic_back = calc_rmse_model(lm_int_aic_back_mod, bk_val, "price")
+rmse_lm_log_mod = calc_rmse_log_model(lm_log_mod, bk_val, "price")
+rmse_lm_log_aic_back = calc_rmse_log_model(lm_log_aic_back_mod, bk_val, "price")
+rmse_lm_log_int_aic_back = calc_rmse_log_model(lm_log_int_aic_back_mod, bk_val, "price")
+```
+
+```{r, calc-validation-error-knn, message = FALSE}
+rmse_knn_1 = calc_rmse_model(knn_mod, bk_val, "price")
+# Models with k = 1:100
+knn_preds = map(knn_mods_k, predict, bk_val)
+rmse_knn_k = map_dbl(knn_preds, calc_rmse, actual = bk_val$price)
+k_best = k[which.min(rmse_knn_k)]
+```
+
+```{r, calc-validation-error-tree, message = FALSE}
+rmse_tree_1 = calc_rmse_model(tree_mod, bk_val, "price")
+# Models with specific cp values
+tree_preds = map(tree_mods_cp, predict, bk_val)
+rmse_tree_cp = map_dbl(tree_preds, calc_rmse, actual = bk_val$price)
+cp_best = cp[which.min(rmse_tree_cp)]
+```
+
+```{r, numeric-results}
+price_rmse = c(rmse_lm, rmse_lm_aic_back, rmse_lm_int_aic_back, rmse_lm_log_mod, rmse_lm_log_aic_back, rmse_lm_log_int_aic_back, rmse_knn_1, min(rmse_knn_k), rmse_tree_1, min(rmse_tree_cp))
+rmse_result = tibble("Model" = c("Linear model with all available predictors", 
+                                 "Linear model with all available predictors using backward selection and AIC", 
+                                 "Linear model with two-way interactions using backward selection and AIC (Best Linear Model)", 
+                                 "Linear model that uses a log-transformed response and all available predictors", 
+                                 "Linear model that uses a log-transformed response and all available predictors using backwards selection and AIC",
+                                 "Linear model that uses a log-transformed response and all available predictors with two-way interactions using backwards selection and AIC", 
+                                 "KNN model with all available predictors", 
+                                 "KNN model using all available predictors with k = 44 (Best KNN Model)", 
+                                 "Tree model with all available predictors", 
+                                 "Tree model using all available predictors with cp = 0.001 (Best Tree Model)"),
+                                 "Validation RMSE" = price_rmse)
+rmse_result %>% 
+  kable(digits = 3) %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+```{r, graphical-results, fig.height = 4, fig.width = 12}
+par(mfrow = c(1, 3))
+# Linear Model Plot
+plot(predict(lm_int_aic_back_mod, bk_val), bk_val$price, 
+     xlab = "Predicted",
+     ylab = "Actual",
+     xlim = c(0, 600),
+     ylim = c(0, 600),
+     main = "Actual vs Predicted Plot of The best Linear Model",
+     pch  = 20,
+     cex  = 2,
+     col = "red")
+abline(a = 0, b = 1, col = "darkgrey")
+grid()
+# KNN Model Plot
+best_knn_mod = knnreg(price ~ ., bk_est, k = 44)
+plot(predict(best_knn_mod, bk_val), bk_val$price, 
+     xlab = "Predicted",
+     ylab = "Actual",
+     xlim = c(0, 600),
+     ylim = c(0, 600),
+     main = "Actual vs Predicted Plot of The Best KNN Model",
+     pch  = 20,
+     cex  = 2,
+     col = "blue")
+abline(a = 0, b = 1, col = "darkgrey")
+grid()
+# Tree Model Plot
+best_tree_mod = rpart(price ~ ., data = bk_est, cp = 0.001)
+plot(predict(best_tree_mod, bk_val), bk_val$price, 
+     xlab = "Predicted",
+     ylab = "Actual",
+     xlim = c(0, 600),
+     ylim = c(0, 600),
+     main = "Actual vs Predicted Plot of The Best Tree Model",
+     pch  = 20,
+     cex  = 2,
+     col = "green")
+abline(a = 0, b = 1, col = "darkgray")
+grid()
+```
+
+***
+
+# Discussion
+
+```{r, test-rmse}
+# Best model - Linear model with two-way interactions using backward selection and AIC 
+lm_int_trn_mod = lm(price ~ . ^ 2, data = bk_trn)
+lm_int_aic_back_trn_mod = step(lm_int_trn_mod, direction = "backward", trace = 0)
+tst_rmse_best = calc_rmse_model(lm_int_aic_back_trn_mod, bk_tst, "price")
+```
+
+Based on the result of the validation RMSE presented in the table above, I select the linear model with two-way interactions using backward selection and AIC which has a validation RMSE of 66.285 as the best model, and the testing RMSE is 72.626, which is close to our validation RMSE. Based on the actual vs predicted plot, the selected model performs well when prices are relatively low, approximately below $150, and gets more deviations and harder to predict when the prices are higher.
+
+Some variables are not clearly specified at all, and some of them are not quite make sense to influence the housing prices.
+ - `latitude` and `longitude` can hardly affect housing prices in a small region like Brooklyn. Within a small region, geographical elements such as **accessability of transportation** and **distance to downtown** will be more impactful than `latitude` and `longitude` to housing prices. Also, the two variables would be more likely to make sense when analyzing the factors of housing prices within United States or even broader, as they could be a great indicator of the temperature.
+ - `number of reviews` could be ambiguous when interpreting the model, since we never know whether the reviews are good or not. Good reviews lead to higher prices, and bad reviews cause lower prices. `number of reviews` does not quite reveal much information, and it somewhat overlap with the variable `reviews_per_month`. If the variable are specified in a clearer way, it would be a very effective indicator in predicting the price.
+
+Since there could be other variables that would have impacts on the housing, more variables could be taken into consideration such as the **cleaness of the room**, **catering**, **number of good reviews**, **retention rate** and **helpfulness of the host** in future researches on the housing prices.
+
+***
+
+# Appendix
+
+## Data Dictionary
+
+- `latitude` - latitude coordinates of the listing
+- `longitude` - longitude coordinates of the listing
+- `room_type` - listing space type
+- `price` - price in dollars
+- `minimum_nights` - amount of nights minimum
+- `number_of_reviews` - number of reviews
+- `reviews_per_month` - number of reviews per month
+- `calculated_host_listings_count` - amount of listing per host
+- `availability_365` - number of days when listing is available for booking
+
+For additional background on the data, see the data source on Kaggle.
+
+## EDA
+
+```{r, eda-plots, fig.height = 4, fig.width = 12, message = FALSE}
+plot_1 = bk_trn %>% 
+  ggplot(aes(x = price)) + 
+  geom_histogram(bins = 30)
+
+plot_2 = bk_trn %>% 
+  ggplot(aes(x = room_type, y = price, colour = price)) + 
+  geom_boxplot()
+
+plot_3 = bk_trn %>% 
+  ggplot(aes(x = reviews_per_month, y = price)) + 
+  geom_point() + geom_smooth(span = 0.3)
+
+gridExtra::grid.arrange(plot_1, plot_2, plot_3, ncol = 3)
+```
+
+```{r, price-map, fig.height = 12, fig.width = 12}
+bk_trn %>% 
+  ggplot(aes(x = longitude, y = latitude, colour = price)) + 
+  geom_point()
+```
+
+[^1]: [New York City Airbnb Open Data](https://www.kaggle.com/dgomonov/new-york-city-airbnb-open-data)
