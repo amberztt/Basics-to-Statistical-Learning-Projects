@@ -1,0 +1,237 @@
+---
+title: "Credit Card Fraud Detection"
+author: "Tiantian Zhang (tz8@illinois.edu)"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document: 
+    theme: cosmo
+    toc: yes
+  pdf_document: default
+urlcolor: BrickRed
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.align = 'center')
+```
+
+```{r, load-packages, include = FALSE}
+library(readr)
+library(tibble)
+library(rsample)
+library(dplyr)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(purrr)
+library(e1071)
+library(tidyverse)
+library(caret)
+library(gbm)
+library(ROSE)
+library(DMwR)
+```
+
+***
+
+# Abstract
+
+> Statistical learning techniques are utilized on the financial data to analyze and predict the detection of credit card fraud. Various machine learning and sampling methods are utilized and metrics are calculated to evalutate the models. Stochastic gradient boosting model with smote pre-processing has the highest sensitivity and is selected the best model, but, still, more data and disclosure is prefered for further analysis.
+
+***
+
+# Introduction
+
+Credit card fraud often refers to theft and fraud committed using or involving a payment card as a fraudulent source of funds in a transaction. [^1] To detect credit card fraud, credit card fraud dectection system is a crucial component in the banking area, since it provide protection to the clients that could potentially occur to their credit card. An unauthorized use of card will be detected and reported by the system, and banks need to take action to take the money back. An accurate detection of credit card cost often have no cost to the banks, but an inaccurate detection will generate additional costs such as labor expenses and compensation of the amount being fraud to clients. Therefore, credit card detection is very important for banks.
+
+In an attempt to predict the validity of the transaction and determine the accuracy of fraud detection, the models being built incorporate various machine learning methods and are examined using different validation approaches. Based on the metrics that we prefer, the best model is selected. Even though the model works well for prediction purposes, more data are preferred in future analysis to improve the prediction.
+
+***
+
+# Method
+
+## Data
+
+The data was accessed from Kaggle. [^2] The data set includes 50000 observations and 31 variables including `Time`, `amount`, `class` and variables being obscured using PCA methods. The data set is splitted into training data and testing data, with 25000 observations each. Since the factors stored in the `class` response variable are extremely unbalanced, pre-processing process is to be applied on to the data set.
+
+```{r, message = FALSE, warning = FALSE}
+cc = read_csv(file = "https://fall-2019.stat432.org/analyses/data/cc-sub.csv")
+```
+
+```{r, train-test split}
+set.seed(42)
+trn_idx = sample(nrow(cc), size = 0.5 * nrow(cc))
+cc_trn = cc[trn_idx, ]
+cc_tst = cc[-trn_idx, ]
+```
+
+```{r, prob table for class variable}
+kable(data.frame("fraudent" = prop.table(table(cc_trn$Class))[[1]], "genuine" = prop.table(table(cc_trn$Class))[[2]]), digits = 4) %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+## Modeling
+
+In order to detect the validity of the transactions, several machine learning techniques are considered. Cross-validation techniques are applied to calculate the important metrics and pre-processing are utilized to balance the factor levels of response variable.
+
+2 machine learning methods are selected:
+ - Logistic Regression, for the binary classification
+ - Stochastic Gradient Boosting
+ 
+```{r, cross-validation and sampling set-up}
+cv = trainControl(method = "cv", number = 5, classProbs = TRUE, summaryFunction = twoClassSummary)
+cv_rose = trainControl(method = "cv", number = 5, classProbs = TRUE, sampling = "rose", summaryFunction = twoClassSummary)
+cv_smote = trainControl(method = "cv", number = 5, classProbs = TRUE, sampling = "smote", summaryFunction = twoClassSummary)
+```
+
+```{r, gbm - no sampling, include = FALSE, message = FALSE, warning = FALSE}
+set.seed(42)
+mod_gbm = train(Class ~ . -Time, 
+              data = cc_trn,
+              method = "gbm",
+              trControl = cv,
+              verbose = FALSE,
+              metric = "Sens"
+)
+```
+
+```{r, gbm-rose, include = FALSE, message = FALSE, warning = FALSE}
+set.seed(42)
+mod_gbm_rose = train(Class ~ . -Time, 
+              data = cc_trn,
+              method = "gbm",
+              trControl = cv_rose,
+              verbose = FALSE,
+              metric = "Sens"
+)
+```
+
+```{r, gbm-smote, include = FALSE, warning = FALSE, message = FALSE}
+set.seed(42)
+mod_gbm_smote = train(Class ~ . -Time, 
+              data = cc_trn,
+              method = "gbm",
+              trControl = cv_smote,
+              verbose = FALSE,
+              metric = "Sens"
+)
+```
+
+```{r, glm-no-sampling, warning = FALSE, message = FALSE, include = FALSE}
+set.seed(42)
+mod_glm = train(Class ~ . -Time, 
+              data = cc_trn,
+              method = "glm",
+              trControl = cv,
+              metric = "Sens"
+)
+```
+
+```{r, glm-rose, warnign = FALSE, message = FALSE, include = FALSE}
+set.seed(42)
+mod_glm_rose = train(Class ~ . -Time, 
+              data = cc_trn,
+              method = "glm",
+              trControl = cv_rose,
+              metric = "Sens"
+)
+```
+
+```{r, glm-smote, warning = FALSE, message = FALSE, include = FALSE}
+set.seed(42)
+mod_glm_smote = train(Class ~ . -Time, 
+              data = cc_trn,
+              method = "glm",
+              trControl = cv_smote,
+              metric = "Sens"
+)
+```
+
+## Evaluation
+
+The "fraudulent" level within `Class` variable is considered to be positive. Since whether fraud transactions are detected or not is crucial, the best model is selected based on sensitivity(a.k.a. true positive rate).
+
+```{r, sensitivity}
+gbm = mod_gbm$results$Sens[[which.max(mod_gbm$results$Sens)]]
+gbm_rose = mod_gbm_rose$results$Sens[[which.max(mod_gbm_rose$results$Sens)]]
+gbm_smote = mod_gbm_smote$results$Sens[[which.max(mod_gbm_smote$results$Sens)]]
+glm = mod_glm$results$Sens
+glm_rose = mod_glm_rose$results$Sens
+glm_smote = mod_glm_smote$results$Sens
+```
+
+***
+
+# Results
+
+```{r, table}
+tibble(
+  "Model" = c("Stochastic Gradient Boosting: no sampling", "Stochastic Gradient Boosting: ROSE", "Stochastic Gradient Boosting: smote (Best Model)", "Logistic Regression: no sampling", "Logistic Regression: ROSE", "Logistic Regression: smote"),
+  "Cross-Validated Sensitivity" = c(gbm, gbm_rose, gbm_smote, glm, glm_rose, glm_smote)
+  ) %>% 
+  kable(digits = 3) %>%
+  kable_styling("striped", full_width = FALSE)
+```
+
+***
+
+# Discussion
+
+```{r, test sensitivity}
+preds = predict(mod_gbm_smote, cc_tst)
+cc_tst$Class = as.factor(cc_tst$Class)
+cm_gbm_smote = confusionMatrix(data = preds, 
+                reference = cc_tst$Class,
+                positive = "fraud")
+gbm_smote_sens = cm_gbm_smote$byClass[[1]]
+```
+
+With a goal of minimizing the false negative rate, the gradient boosting model with smote sampling has the highest sensitivity and is selected as the best model. After applying this model to the test data, the test sensitivity is 0.8824. The confusion matrix is shown as follow:
+
+```{r}
+cm = table(predicted = predict(mod_gbm_smote, cc_tst, type = "raw"),
+      actual = cc_tst$Class)
+kable(cm) %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+The loss structure is developed by setting the cost of each false negative event to be 0.5 * amount and cost of each false positive event to be 1. By applying the selected model into the loss structure, the maximum cost will be 1063, and the minimum cost will be 0.077.
+
+```{r, loss}
+new_tst = cbind(cc_tst, preds)
+select_fn_tst = new_tst[which(new_tst$Class == "fraud" & new_tst$preds == "genuine"),]
+select_fp_tst = new_tst[which(new_tst$Class == "genuine" & new_tst$preds == "fraud"),]
+max_cost = max(select_fn_tst$Amount) * 0.5
+average_cost = (nrow(select_fp_tst) * 1 + sum(select_fn_tst$Amount) * 0.5) / nrow(cc_tst)
+```
+
+The limitation of this analysis would be that majority of the variables have been obscured by the PCA, so we do not really whether the variables are significant in predicting or not. Since there are 21 unknown variable in this analysis, we can hardly explain the estimation of `class` variable. We don't really know whether the variable makes sense in playing a role in the prediction and whether there are any other important variables missing from the data set that could make an impact. Therefore, this model works better for predicting than explaining.
+
+***
+
+# Appendix
+
+## Data Dictionary
+
+- `Time` - The time when the transaction occurred
+- `Amount` - The amount of money being involved in the transaction
+- `Class` - The validity of the transaction regarding whether it is fraudulent or not
+- `V1`, `V2`...`V21` - Variables being obscured by PCA preprocessing process to protect clients' information and reduce data's dimensionality
+
+## EDA
+
+```{r}
+cc_trn %>% 
+  ggplot(aes(x = Time, col = Class)) + 
+  geom_density()
+
+cc_trn %>% 
+  ggplot(aes(x = Amount, col = Class)) + 
+  geom_density()
+```
+
+[^1]: [Wikipedia: Credit Card Fraud](https://en.wikipedia.org/wiki/Credit_card_fraud)
+[^2]: [Kaggle: Credit Card Fraud Detection](https://www.kaggle.com/mlg-ulb/creditcardfraud)
