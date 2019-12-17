@@ -1,0 +1,672 @@
+---
+title: "Mobile Price Classification"
+author: "Meilin Chen(meilinc2), Rongqi Gao(rongqig2), Luyu Zhang(luyuz2), Tiantian Zhang(tz8)"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document: 
+    theme: cosmo
+    toc: yes
+  pdf_document: default
+urlcolor: BrickRed
+---
+
+```{r include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.align = 'center')
+```
+
+***
+
+```{r load-packages, include=FALSE}
+library(caret)
+library(readr)
+library(rsample)
+library(dplyr)
+library(glmnet)
+library(DMwR)
+library(randomForest)
+library(nnet)
+library(kernlab)
+library(kableExtra)
+library(ggplot2)
+```
+
+# Abstract
+
+> Mobile devices, especially mobile phones have become an indispensable part of life with the diverse features being created and improved. Since the mobile phone industry is continuously changing with innovative products and consumer demand, the price of phone are varies based on their appearance and practicability, and affected by many other factors. Statistical learning techniques are used to determine if it is possible to effectively predict phone price from other variables.
+Through building the model utilizing the statistical learning techniques, we can make predictions of the possible prices of mobile phones based on the features it has. Although our selected show somewhat high accuracy, more kinds of data are preferred in future analysis in predicting the mobile phone prices
+
+# Introduction
+
+It is undoubted that mobile phone has played an important role in our daily life. With more features being created, the innovative mobile phone uses match people’s desire and demand for mobile devices. [^1]
+
+For optimal learning, phone, is required different kinds of technology and appearance. Depending on certain demographic factors, there are different factors to affect price of phone.The price maybe predictable by other body data. The price range was classified by three levels, 0(low cost), 1(medium cost), 2(high cost) and 3(very high cost). As the public has an increasing demand for mobile, the public are curious which feature has the most impact. The use of different data and technology becomes familiar. If the mobile price is predictable is still in question.
+
+Statistical learning techniques were applied to a dataset called mobile prices were created into two dataset, test and train dataset.However, practical and statistical limitations suggest the need for further investigation.
+
+# Method
+
+## Data
+
+The dataset was collected from Kaggle and originally contains two dataset, the train and test. For optimal learning, the train dataset would be use to split data. After pre-processing and normalizing data, We split the dataset into regression and classification, each contain four sets, training, testing, estimation, and validation.
+
+```{r warning = FALSE, message = FALSE}
+mobile = read.csv("data/train.csv")
+```
+
+```{r factorization, include=FALSE}
+mobile = mobile %>%
+  mutate(
+    blue = as.factor(blue),
+    dual_sim = as.factor(dual_sim),
+    four_g = as.factor(four_g),
+    three_g = as.factor(three_g),
+    touch_screen = as.factor(touch_screen),
+    wifi = as.factor(wifi)
+  )
+```
+
+```{r normalization, include=FALSE}
+pp = preProcess(mobile[,-c(2, 4, 6, 18, 19, 20, 21)],
+                method = c("center", "scale"))
+
+mobile_data = mobile
+mobile_data[,-c(2, 4, 6, 18, 19, 20, 21)] =
+  predict(pp, mobile[,-c(2, 4, 6, 18, 19, 20, 21)])
+```
+
+```{r data-split-regression, include=FALSE}
+set.seed(42)
+mobile_reg_split = initial_split(mobile_data, prop = 0.80)
+reg_trn = training(mobile_reg_split)
+reg_tst = testing(mobile_reg_split)
+
+# estimation-validation split
+mobile_reg_trn = initial_split(reg_trn, prop = 0.80)
+reg_est = training(mobile_reg_trn)
+reg_val = testing(mobile_reg_trn)
+```
+
+```{r data-split-classification, include=FALSE}
+set.seed(42)
+mobile_cla_split = initial_split(mobile_data, prop = 0.80)
+cla_trn = training(mobile_cla_split)
+cla_tst = testing(mobile_cla_split)
+
+# factorization
+cla_trn = cla_trn %>% mutate(price_range = as.factor(price_range))
+cla_tst = cla_tst %>% mutate(price_range = as.factor(price_range))
+
+# estimation-validation split
+mobile_cla_trn = initial_split(cla_trn, prop = 0.80)
+cla_est = training(mobile_cla_trn)
+cla_val = testing(mobile_cla_trn)
+```
+
+```{r x-matrix, include=FALSE}
+# regression
+trn_x_reg = model.matrix(price_range ~ ., data = reg_trn)[, -1]
+tst_x_reg = model.matrix(price_range ~ ., data = reg_tst)[, -1]
+est_x_reg = model.matrix(price_range ~ ., data = reg_est)[, -1]
+val_x_reg = model.matrix(price_range ~ ., data = reg_val)[, -1]
+
+#classification
+trn_x_cla = model.matrix(price_range ~ ., data = cla_trn)[, -1]
+tst_x_cla = model.matrix(price_range ~ ., data = cla_tst)[, -1]
+est_x_cla = model.matrix(price_range ~ ., data = cla_est)[, -1]
+val_x_cla = model.matrix(price_range ~ ., data = cla_val)[, -1]
+```
+
+```{r check-for-balance, echo=FALSE}
+hist(mobile$price_range,
+     main = "Figure: Amounts of mobile in different price range",
+     xlab = "Price Range",
+     ylab = "Amount",
+     xlim = c(0, 3),
+     col = "#1E90FF")
+box()
+```
+
+## Modeling
+ - lm used to fit linear model, carry out regression. 
+ - knn model would classifies test set from testing set.
+ - ksvm would be used either for classification or regression. It is packaged in kernlab.
+ - nnet fits single-hidden-layer neural network, and predict categorical value. It packaged in nnet.
+ - randomForest implements the randomForest algorithm, and used in unsupervised mode for assessing proximities among data points. It is in randomForest package.
+ - cv.glmnet generalize k-fold cross-validation for fitting the entire lasso or elastic-net regularization path for linear regression. It is packaged in glmnet.
+ - gbm, tree model is fitted to predict the form of an ensemble of weak prediction models, typically decision trees. It is in the gbm package.
+ 
+### Regression
+
+#### Linear Model
+
+```{r linear-model-regression, echo=TRUE, results='hide'}
+set.seed(42)
+lm_reg_mod = train(
+  form = price_range ~ .,
+  data = reg_trn,
+  method = "lm",
+  trControl = trainControl(method = "cv", number = 5)
+)
+lm_reg_mod
+```
+
+#### K-Nearest Neighbors
+```{r knn-regression, echo=TRUE, results='hide'}
+set.seed(42)
+knn_reg_mod = train(
+  form = price_range ~ .,
+  data = reg_trn,
+  method = "knn",
+  trControl = trainControl(method = "cv", number = 5)
+)
+```
+
+#### Support Vector Machine
+```{r svm-regression, echo=TRUE, results='hide'}
+set.seed(42)
+svm_reg_mod = ksvm(price_range ~ ., data = reg_est)
+```
+
+#### Neural Network
+```{r neural-network-regression, echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+set.seed(42)
+nnet_reg_mod = train(
+  form = price_range ~ .,
+  data = reg_est,
+  method = "nnet",
+  trControl = trainControl(method = "cv",
+                           number = 5),
+  trace = FALSE
+)
+```
+
+#### Random Forest
+```{r random-forest-regression, echo=TRUE, results='hide'}
+set.seed(42)
+rf_reg_mod = train(
+  form = price_range ~ .,
+  data = reg_est,
+  method = "ranger",
+  trControl = trainControl(method = "cv",
+                           number = 5)
+)
+```
+
+#### Regularization
+```{r regularization-regression, echo=TRUE, results='hide'}
+set.seed(42)
+glm_reg_mod = cv.glmnet(est_x_reg, reg_est$price_range)
+best = glm_reg_mod$glmnet.fit
+```
+
+#### Gradient Boosting Machines
+```{r gbm-regression, echo=TRUE, results='hide'}
+set.seed(42)
+gbm_reg_mod = train(
+  form = price_range ~ .,
+  data = reg_est,
+  method = "gbm",
+  metric = "RMSE",
+  trControl = trainControl(method = "cv",
+                           number = 5)
+)
+```
+
+### Classification
+
+#### K-Nearest Neighbors
+```{r knn-classification, echo=TRUE, results='hide'}
+set.seed(42)
+knn_cla_mod = train(
+  form = price_range ~ .,
+  data = cla_trn,
+  method = "knn",
+  trControl = trainControl(method = "cv",
+                           number = 5)
+)
+```
+
+#### Support Vector Machine
+```{r svm-classification, echo=TRUE, results='hide'}
+set.seed(42)
+svm_cla_mod = ksvm(price_range ~ ., data = cla_est)
+```
+
+#### Neural Network
+```{r neural-network-classification, echo=TRUE, results='hide'}
+set.seed(42)
+nnet_cla_mod = train(
+  form = price_range ~ .,
+  data = cla_trn,
+  method = "nnet",
+  trControl = trainControl(method = "cv",
+                           number = 5)
+)
+```
+
+#### Random Forest
+```{r random-forest-classification, echo=TRUE, results='hide'}
+set.seed(42)
+rf_cla_mod = train(
+  form = price_range ~ ., 
+  data = cla_trn,
+  method = "ranger",
+  trControl = trainControl(method = "cv",
+                           number = 5)
+)
+```
+
+#### Multinomial Logistic Model
+```{r multinom-classification, echo=TRUE, results='hide'}
+set.seed(42)
+logis_cla_mod = train(
+  form = price_range ~ ., 
+  data = cla_trn,
+  method = "multinom",
+  metric = "Accuracy",
+  trControl = trainControl(method = "cv",
+                           number = 5),
+  trace = FALSE
+)
+```
+
+#### Regularization
+```{r regularization-classification, echo=TRUE, results='hide'}
+set.seed(42)
+glm_cla_mod = cv.glmnet(
+  est_x_cla,
+  cla_est$price_range,
+  family = "multinomial",
+  alpha = 0,
+  nfolds = 5
+)
+```
+
+#### Gradient Boosting Machines
+```{r gbm-classification, echo=TRUE, results='hide'}
+set.seed(42)
+gbm_cla_mod = train(
+  price_range ~ .,
+  data = cla_trn,
+  method = "gbm",
+  trControl = trainControl(method = "cv",
+                           number = 5),
+  metric = "Accuracy"
+)
+```
+
+## Evaluation
+
+```{r evaluation, include=FALSE}
+calc_rmse = function(act, pred){
+  sqrt(mean((act - pred) ^ 2))
+}
+calc_acc = function(act, pred){
+  mean(act == pred)
+}
+```
+
+```{r regression-accuracy, include=FALSE}
+lm_reg_acc = calc_acc(reg_val$price_range,
+                      round(predict(lm_reg_mod, reg_val)))
+knn_reg_acc = calc_acc(reg_val$price_range,
+                       round(predict(knn_reg_mod, reg_val)))
+svm_reg_acc = calc_acc(reg_val$price_range,
+                       round(predict(svm_reg_mod, reg_val)))
+nnet_reg_acc = calc_acc(reg_val$price_range, 
+                        round(predict(nnet_reg_mod, reg_val)))
+rf_reg_acc = calc_acc(reg_val$price_range,
+                      round(predict(rf_reg_mod, reg_val)))
+glm_reg_acc = calc_acc(reg_val$price_range,
+                       round(predict(best, val_x_reg)[, which.min(glm_reg_mod$cvm)]))
+gbm_reg_acc = calc_acc(reg_val$price_range,
+                       round(predict(gbm_reg_mod, reg_val)))
+```
+
+```{r classification-accuracy, include=FALSE}
+knn_cla_acc = calc_acc(cla_val$price_range,
+                       predict(knn_cla_mod, cla_val))
+svm_cla_acc = calc_acc(cla_val$price_range,
+                       predict(svm_cla_mod, cla_val))
+nnet_cla_acc = max(nnet_cla_mod$results[, 3])
+rf_cla_acc = max(rf_cla_mod$results[, 4])
+logis_cla_acc = max(logis_cla_mod$results[, 2])
+glm_cla_acc = calc_acc(cla_val$price_range,
+                       predict(glm_cla_mod, val_x_cla, type = "class"))
+gbm_cla_acc = max(gbm_cla_mod$results[, 5])
+```
+
+***
+
+# Results
+
+```{r regression-models, echo=FALSE}
+tibble(
+  "Model" = c(
+    "Linear Model",
+    "K-Nearest Neighbors",
+    "Support Vector Machine",
+    "Neural Network",
+    "Random Forest",
+    "Generalized Linear Model with Regularization",
+    "Gradient Boosting Machine"
+  ),
+  "Validated Accuracy" = c(
+    lm_reg_acc,
+    knn_reg_acc,
+    svm_reg_acc,
+    nnet_reg_acc,
+    rf_reg_acc,
+    glm_reg_acc,
+    gbm_reg_acc
+  )
+) %>%
+  kable(digits = 6, caption = "Table: **Accuracy of All Regression Models") %>%
+  kable_styling("striped", full_width = FALSE)
+```
+
+```{r classification-models, echo=FALSE}
+tibble(
+  "Model" = c(
+    "K-Nearest Neighbors",
+    "Support Vector Machine",
+    "Neural Network",
+    "Random Forest",
+    "Multinomial Logistic Regression",
+    "Generalized Linear Model with Regularization",
+    "Gradient Boosting Machine"
+  ),
+  "Validated Accuracy" = c(
+    knn_cla_acc,
+    svm_cla_acc,
+    nnet_cla_acc,
+    rf_cla_acc,
+    logis_cla_acc,
+    glm_cla_acc,
+    gbm_cla_acc
+  )
+) %>%
+  kable(digits = 6, caption = "Table: **Accuracy of All Classification Models") %>%
+  kable_styling("striped", full_width = FALSE)
+```
+
+# Discussion
+
+```{r refit-multinom, include=FALSE, results='hide'}
+best_mod = nnet_cla_mod
+```
+
+```{r echo=FALSE}
+cm_best = confusionMatrix(data = predict(best_mod, cla_tst),
+                reference = cla_tst$price_range)
+tibble(
+  "Prediction&Reference" = c("0", "1", "2", "3"),
+  "0" = c(111, 1, 0, 0),
+  "1" = c(1, 102, 2, 0),
+  "2" = c(0, 0, 84, 2),
+  "3" = c(0, 0, 0, 96),) %>%
+  kable(caption = "Table: Confusion Matrix") %>%
+  kable_styling("striped", full_width = FALSE)
+```
+
+```{r, sensitivity}
+sens_0 = cm_best$table[1, 1] / colSums(cm_best$table)[[1]]
+sens_1 = cm_best$table[2, 2] / colSums(cm_best$table)[[2]]
+sens_2 = cm_best$table[3, 3] / colSums(cm_best$table)[[3]]
+sens_3 = cm_best$table[4, 4] / colSums(cm_best$table)[[4]]
+```
+
+```{r, test-sensitivity-table}
+tibble(
+  "Price range" = c(
+    "0", "1", "2", "3"
+  ),
+  "Test Sensitivity" = c(
+   sens_0,
+   sens_1,
+   sens_2,
+   sens_3
+  )) %>%
+  kable(digits = 3, caption = "Table: Test Sensitivity of Price Ranges") %>%
+  kable_styling("striped", full_width = FALSE)
+```
+
+```{r test accuracy, echo=FALSE}
+
+test_acc = calc_acc(cla_tst$price_range, predict(best_mod, cla_tst))
+```
+
+## Test Accuracy Result
+
+Based on the results above, we can tell that it is somewhat optimal since the accuracy of the model we chose is $0.969392$, very close to 1. Although our model might produce errors, on account of the outstanding accuracy value, we believe this analysis proves a proof-of-concept on predicting mobile price. We tried several different models at the very beginning, including regression method and classification method, and we end up with the neural network model in classification method because of its excellent accuracy. After using the train function training models, we turn to use the testing set to see how well the model fitted. It is worth to note that the test accuracy of neural network model is `r test_acc`, which is really encouraging. The test sensitivity table shown above also indicates the good accuracy of our predictions.
+
+## Limitations of Model
+
+But we have to recognize that even though we have a pretty good cross-validated accuracy, overfitting issue may exist in our selected neural network classification model, since the neural network model selection process when training does not fully take weight decay into consideration. Therefore, to prevent overfitting issues, we will have to use the regularization methods.
+
+Moreover, sometimes the mobile phone pricing does not fully depend on the features and appearance, pricing strategies, advertising and brand effects may play a larger role in mobile devices pricing. Despite whether a mobile phone has wifi and 4G is relevant for consumers to make their purchase, attributes such as mobile depths in centimeters and number of cores of processors do not really matter for consumers. Our data set consists mostly of the intrinsic attributes of mobile phones, so our model might focus a bit too much on the internal features of mobile phones to predict prices instead of external factors that could affect consumer choices. In further analysis, not only variables about internal features can be included, but also variables such as `brand loyalty` and `degree of market penetration` should be considered.
+
+To make the mobile phone price prediction more effective for Bob's start-up mobile phone business, Bob should not only rely on the internal features to price his product, he should also considered the positions that his company is going to take in the mobile phone industry. To make this machine learning analysis to be effective in predicting the price range of his products, he should try to gather data from comparable companies, so that the pricing range results would be more reliable and accurate.
+
+## Contextualization
+
+The result of the neural network model above is encouraging since it could provide prediction with over 95% accuracy. That is to say, we can use this model to predict on mobile price based on these properties accurately. Most of the variables in the data set are useful, including energy of buttery, speed of microprocessors, pixels of the front camera and internal memory. These variables help us to fit models in an efficient way. 
+
+Because of the rapid development of high-tech products, the prediction of mobile phone price should be analyzed in real-time. All of the predictors listed in the data file are basic requirements of cell phone. With the advances of technology, the cost of raw materials is falling and consumers are increasingly expecting more from their phones. As a result, the frequency of cell phone updates has increased dramatically. People having more new expectations for mobile phones. The prediction of mobile price can vary from time to time since the requirements of customers changed quickly.
+
+Admittedly, since the data we accessed is uploaded 2 years ago, some variables in the data set are no longer appropriate, such as whether the phone has bluetooth or whether the phone could run on 3G networks or 4G networks. We would like to gather more up-to-date properties of cell phone next time to give more reliable predictions. 
+
+## Further Improvement
+
+Therefore, in further analysis in predicting mobile phone price, more external variables are preferred and regularization methods could be utilized in combine with other machine learning techniques in order to control for the overfitting issue. We also need to keep in mind that since the mobile phone industry has been quickly developing, we should keep up the trend when selecting the attributes. For example, in two or three years, people may want to include `5G` in their mobile phone pricing analysis.
+
+# Appendix
+
+## Data Dictionary
+
+- `battery_power` - Total energy a battery can store in one time measured in mAh
+- `blue` - Has bluetooth or not
+- `clock_speed` - speed at which microprocessor executes instructions
+- `dual_sim` - Has dual sim support or not
+- `fc` - Front Camera mega pixels
+- `four_g` - Has 4G or not
+- `int_memory` - Internal Memory in Gigabytes
+- `m_dep` - Mobile Depth in cm
+- `mobile_wt` - Weight of mobile phone
+- `n_cores` - Number of cores of processor
+- `pc` - Primary Camera mega pixels
+- `px_height` - Pixel Resolution Height
+- `px_width` - Pixel Resolution Width
+- `ram` - Random Access Memory in Megabytes
+- `sc_h` - Screen Height of mobile in cm
+- `sc_w` - Screen Width of mobile in cm
+- `talk_time` - Pixel Resolution Width
+- `three_g` - Has 3G or not
+- `touch_screen` - Has touch screen or not
+- `wifi` - Has wifi or not
+- `price_range` - The target variable with value of 0(low cost), 1(medium cost), 2(high cost) and 3(very high cost).
+
+See the Kaggle website for additional documentation.
+
+## EDA
+
+```{r EDA, include=FALSE}
+p01 = mobile %>% 
+  ggplot(aes(x = battery_power, fill = price_range)) + 
+  theme(axis.text.x = element_text(angle = 40, hjust = 3)) + 
+  geom_density() +
+  facet_wrap(~price_range)
+
+p02 = mobile %>% 
+  ggplot(aes(x = blue, fill = price_range)) + 
+  geom_bar() + 
+  facet_wrap(~price_range)
+
+p03 = mobile %>% 
+  ggplot(aes(x = clock_speed, fill = price_range)) + 
+  theme(axis.text.x = element_text(angle = 40, hjust = 3)) + 
+  geom_density() +
+  facet_wrap(~price_range)
+
+p04 = mobile %>% 
+  ggplot(aes(x = dual_sim, fill = price_range)) + 
+  geom_bar() + 
+  facet_wrap(~price_range)
+
+p05 = mobile %>% 
+  ggplot(aes(x = fc, fill = price_range)) + 
+  theme(axis.text.x = element_text(angle = 40, hjust = 3)) + 
+  geom_density() +
+  facet_wrap(~price_range)
+
+p06 = mobile %>% 
+  ggplot(aes(x = four_g, fill = price_range)) + 
+  geom_bar() + 
+  facet_wrap(~price_range)
+
+p07 = mobile %>% 
+  ggplot(aes(x = int_memory, fill = price_range)) + 
+  theme(axis.text.x = element_text(angle = 40, hjust = 3)) + 
+  geom_density() +
+  facet_wrap(~price_range)
+
+p08 = mobile %>% 
+  ggplot(aes(x = m_dep, fill = price_range)) + 
+  theme(axis.text.x = element_text(angle = 40, hjust = 3)) + 
+  geom_density() +
+  facet_wrap(~price_range)
+
+p09 = mobile %>% 
+  ggplot(aes(x = mobile_wt, fill = price_range)) + 
+  theme(axis.text.x = element_text(angle = 40, hjust = 3)) + 
+  geom_density() +
+  facet_wrap(~price_range)
+
+p10 = mobile %>% 
+  ggplot(aes(x = n_cores, fill = price_range)) + 
+  theme(axis.text.x = element_text(angle = 40, hjust = 3)) + 
+  geom_bar() +
+  facet_wrap(~price_range)
+
+p11 = mobile %>% 
+  ggplot(aes(x = pc, fill = price_range)) + 
+  theme(axis.text.x = element_text(angle = 40, hjust = 3)) + 
+  geom_bar() +
+  facet_wrap(~price_range)
+
+p12 = mobile %>% 
+  ggplot(aes(x = px_height, fill = price_range)) + 
+  theme(axis.text.x = element_text(angle = 40, hjust = 3)) + 
+  geom_density() +
+  facet_wrap(~price_range)
+
+p13 = mobile %>% 
+  ggplot(aes(x = px_width, fill = price_range)) + 
+  theme(axis.text.x = element_text(angle = 40, hjust = 3)) + 
+  geom_density() +
+  facet_wrap(~price_range)
+
+p14 = mobile %>% 
+  ggplot(aes(x = ram, fill = price_range)) + 
+  theme(axis.text.x = element_text(angle = 40, hjust = 3)) + 
+  geom_density() +
+  facet_wrap(~price_range)
+
+p15 = mobile %>% 
+  ggplot(aes(x = sc_h, fill = price_range)) + 
+  theme(axis.text.x = element_text(angle = 40, hjust = 3)) + 
+  geom_bar() +
+  facet_wrap(~price_range)
+
+p16 = mobile %>% 
+  ggplot(aes(x = sc_w, fill = price_range)) + 
+  theme(axis.text.x = element_text(angle = 40, hjust = 3)) + 
+  geom_bar() +
+  facet_wrap(~price_range)
+
+p17 = mobile %>% 
+  ggplot(aes(x = talk_time, fill = price_range)) + 
+  theme(axis.text.x = element_text(angle = 40, hjust = 3)) + 
+  geom_density() +
+  facet_wrap(~price_range)
+
+p18 = mobile %>% 
+  ggplot(aes(x = three_g, fill = price_range)) + 
+  theme(axis.text.x = element_text(angle = 40, hjust = 3)) + 
+  geom_bar() +
+  facet_wrap(~price_range)
+
+p19 = mobile %>% 
+  ggplot(aes(x = touch_screen, fill = price_range)) + 
+  theme(axis.text.x = element_text(angle = 40, hjust = 3)) + 
+  geom_bar() +
+  facet_wrap(~price_range)
+
+p20 = mobile %>% 
+  ggplot(aes(x = wifi, fill = price_range)) + 
+  theme(axis.text.x = element_text(angle = 40, hjust = 3)) + 
+  geom_bar() +
+  facet_wrap(~price_range)
+```
+
+```{r print-eda-plots, fig.height = 36, fig.width = 24, echo=FALSE}
+gridExtra::grid.arrange(p01, p02, p03, p04, p05, p06, p07, p08, p09, p10, p11, p12, p13, p14, p15, p16, p17, p18, p19, p20, ncol = 3)
+```
+
+## Additional Results
+
+```{r echo=FALSE}
+knn_reg_mod$results %>% 
+  kable(digits = 3, caption = "Table: K-Nearest Neighbors Regression") %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+```{r echo=FALSE}
+nnet_reg_mod$results %>% 
+  kable(digits = 4, caption = "Table: Neural Network Regression") %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+```{r echo=FALSE}
+rf_reg_mod$results %>% 
+  kable(digits = 4, caption = "Random Forest Regression") %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+```{r echo=FALSE}
+gbm_reg_mod$results %>% 
+  kable(digits = 4, caption = "Table: Gradient Boosting Machines Regression") %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+```{r echo=FALSE}
+knn_cla_mod$results %>% 
+  kable(digits = 3, caption = "Table: K-Nearest Neighbors Classification") %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+```{r echo=FALSE}
+nnet_cla_mod$results %>% 
+  kable(digits = 3, caption = "Table: Neural Network Classification") %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+```{r echo=FALSE}
+rf_cla_mod$results %>% 
+  kable(digits = 3, caption = "Table: Random Forest Classification") %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+```{r echo=FALSE}
+logis_cla_mod$results %>% 
+  kable(digits = 3, caption = "Table: Multinomial Logistic Classification") %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+```{r echo=FALSE}
+gbm_cla_mod$results %>% 
+  kable(digits = 3, caption = "Table: Gradient Boosting Machines Classification") %>% 
+  kable_styling("striped", full_width = FALSE)
+```
+
+[^1]: [Kaggle: Mobile Price Classification](https://www.kaggle.com/iabhishekofficial/mobile-price-classification)
